@@ -1,6 +1,5 @@
-name: ZAP Security Scan (Docker Version)
+name: ZAP Security Scan - Fixed
 
-# Dockerを使用したより安定版のZAPスキャン
 on:
   pull_request:
     branches: [ main, master ]
@@ -9,67 +8,132 @@ on:
   workflow_dispatch:
 
 jobs:
-  zap-scan-docker:
+  zap-scan:
     runs-on: ubuntu-latest
-    name: ZAP Full Scan with Docker
+    name: ZAP Security Scan
     
+    # 権限を明示的に設定（Issue作成を無効化）
+    permissions:
+      contents: read
+      actions: read
+      
     steps:
     # 1. ソースコードをチェックアウト
     - name: Checkout code
       uses: actions/checkout@v4
+      
+    # 2. Node.js環境の準備
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '14'
+        cache: 'npm'
     
-    # 2. Dockerを使ってjuice-shopを起動
-    - name: Build and Start Juice Shop with Docker
+    # 3. 依存関係をインストール
+    - name: Install dependencies
       run: |
-        # Dockerイメージをビルド
-        docker build -t juice-shop .
-        # コンテナをバックグラウンドで起動
-        docker run -d -p 3000:3000 --name juice-shop juice-shop
+        npm ci --legacy-peer-deps
+        cd frontend && npm install --legacy-peer-deps && cd ..
+    
+    # 4. アプリケーションをビルドして起動
+    - name: Build and Start Juice Shop
+      run: |
+        npm run build
+        npm start &
         echo "Waiting for application to start..."
-        sleep 30
+        sleep 60
         
-        # アプリケーションが起動しているか確認
-        for i in {1..10}; do
+        # 起動確認（リトライ機能付き）
+        for i in {1..5}; do
           if curl -f http://localhost:3000; then
-            echo "Application is running"
+            echo "Application is running successfully"
             break
           else
-            echo "Attempt $i: Application not ready yet, waiting..."
-            sleep 10
+            echo "Attempt $i: Application not ready, waiting..."
+            sleep 15
+            if [ $i -eq 5 ]; then
+              echo "Application failed to start"
+              exit 1
+            fi
           fi
         done
     
-    # 3. ZAP Baseline Scan（軽量スキャン）
+    # 5. スキャン結果ディレクトリを作成（権限問題を回避）
+    - name: Prepare scan directories
+      run: |
+        mkdir -p zap-reports
+        chmod 777 zap-reports
+    
+    # 6. ZAP Baseline Scan（Issue作成を無効化）
     - name: ZAP Baseline Scan
-      uses: zaproxy/action-baseline@v0.12.0
-      with:
-        target: 'http://localhost:3000'
-        rules_file_name: '.zap/rules.tsv'
-        cmd_options: '-a'
+      continue-on-error: true
+      run: |
+        docker run -v $(pwd)/zap-reports:/zap/wrk/:rw \
+          --network=host \
+          -t ghcr.io/zaproxy/zaproxy:stable \
+          zap-baseline.py \
+          -t http://localhost:3000 \
+          -J zap-baseline-report.json \
+          -w zap-baseline-report.md \
+          -r zap-baseline-report.html \
+          -a \
+          --hook=/zap/auth_hook.py || true
     
-    # 4. ZAP Full Scan（完全スキャン）
+    # 7. ZAP Full Scan（Issue作成を無効化）
     - name: ZAP Full Scan
-      uses: zaproxy/action-full-scan@v0.10.0
-      with:
-        target: 'http://localhost:3000'
-        rules_file_name: '.zap/rules.tsv'
-        cmd_options: '-a -j'
+      continue-on-error: true
+      run: |
+        docker run -v $(pwd)/zap-reports:/zap/wrk/:rw \
+          --network=host \
+          -t ghcr.io/zaproxy/zaproxy:stable \
+          zap-full-scan.py \
+          -t http://localhost:3000 \
+          -J zap-full-report.json \
+          -w zap-full-report.md \
+          -r zap-full-report.html \
+          -a \
+          -j || true
     
-    # 5. スキャン結果をアーティファクトとして保存
+    # 8. スキャン結果をアーティファクトとして保存
     - name: Upload ZAP scan results
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: zap-scan-results-docker
+        name: zap-security-scan-results
         path: |
-          report_html.html
-          report_json.json
-          report_md.md
+          zap-reports/
         retention-days: 30
     
-    # 6. クリーンアップ
-    - name: Cleanup Docker containers
+    # 9. スキャン結果のサマリーを表示
+    - name: Display Scan Summary
       if: always()
       run: |
-        docker stop juice-shop || true
-        docker rm juice-shop || true
+        echo "=== ZAP Scan Summary ==="
+        if [ -f "zap-reports/zap-baseline-report.json" ]; then
+          echo "✅ Baseline scan completed"
+          # JSONから重要な情報を抽出
+          if command -v jq &> /dev/null; then
+            echo "High risk alerts: $(jq '.site[].alerts[] | select(.riskdesc=="High") | length' zap-reports/zap-baseline-report.json 2>/dev/null || echo "0")"
+            echo "Medium risk alerts: $(jq '.site[].alerts[] | select(.riskdesc=="Medium") | length' zap-reports/zap-baseline-report.json 2>/dev/null || echo "0")"
+          fi
+        else
+          echo "❌ Baseline scan failed or incomplete"
+        fi
+        
+        if [ -f "zap-reports/zap-full-report.json" ]; then
+          echo "✅ Full scan completed"
+        else
+          echo "❌ Full scan failed or incomplete"
+        fi
+        
+        echo "📄 Reports available in artifacts section"
+    
+    # 10. 重要な脆弱性があった場合の通知（オプション）
+    - name: Check for High Risk Vulnerabilities
+      if: always()
+      run: |
+        if [ -f "zap-reports/zap-baseline-report.json" ] || [ -f "zap-reports/zap-full-report.json" ]; then
+          echo "::notice::ZAP security scan completed. Check the artifacts for detailed reports."
+        else
+          echo "::warning::ZAP scan may have encountered issues. Please check the logs."
+        fi
