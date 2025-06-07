@@ -1,0 +1,40 @@
+name: OWASP ZAP Full Scan
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 * * 0' # 毎週日曜日に実行
+
+jobs:
+  zap_scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Juice ShopのDockerコンテナを起動
+        run: |
+          docker run -d -p 3000:3000 --name juice-shop bkimminich/juice-shop
+          sleep 10 # コンテナの起動を待機
+
+      - name: OWASP ZAP フルスキャンを実行
+        uses: zaproxy/action-full-scan@v0.3.0
+        with:
+          target: 'http://localhost:3000'
+          fail_action: false
+          cmd_options: '-I'
+
+      - name: レポートを作成
+        run: |
+          echo "## OWASP ZAP セキュリティレポート" >> $GITHUB_STEP_SUMMARY
+          echo "| 脆弱性レベル | 検出数 |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 High      | $HIGH_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟡 Medium    | $MEDIUM_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟢 Low       | $LOW_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| ℹ️ Info      | $INFO_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total**    | $((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT + INFO_COUNT)) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔍 自動診断完了！詳細なレポートはログを確認してください。" >> $GITHUB_STEP_SUMMARY
