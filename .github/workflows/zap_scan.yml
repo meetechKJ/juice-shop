@@ -1,48 +1,81 @@
-name: OWASP ZAP Full Scan
+name: ZAP Full Security Scan
 
+# このワークフローがいつ実行されるかを定義
 on:
-  push:
-    branches: [ main, develop, master ]
+  # プルリクエストが作成・更新された時
   pull_request:
     branches: [ main, master ]
-  schedule:
-    - cron: '0 0 * * 0' # 毎週日曜日に実行
+  # mainブランチにプッシュされた時
+  push:
+    branches: [ main, master ]
+  # 手動実行も可能にする
+  workflow_dispatch:
 
 jobs:
-  zap_scan:
+  zap-scan:
     runs-on: ubuntu-latest
+    name: ZAP Full Scan
+    
     steps:
-      - name: リポジトリをチェックアウト
-        uses: actions/checkout@v3
+    # 1. ソースコードをチェックアウト
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    # 2. Node.jsのセットアップ（juice-shopはNode.jsアプリケーション）
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    # 3. 依存関係をインストール
+    - name: Install dependencies
+      run: npm ci
+    
+    # 4. アプリケーションをバックグラウンドで起動
+    - name: Start Juice Shop
+      run: |
+        npm start &
+        echo "Waiting for application to start..."
+        sleep 30
+        # アプリケーションが起動しているか確認
+        curl -f http://localhost:3000 || exit 1
+        echo "Application is running"
+    
+    # 5. ZAP Baseline Scan（軽量スキャン）を実行
+    - name: ZAP Baseline Scan
+      uses: zaproxy/action-baseline@v0.12.0
+      with:
+        target: 'http://localhost:3000'
+        rules_file_name: '.zap/rules.tsv'
+        cmd_options: '-a'
+    
+    # 6. ZAP Full Scan（完全スキャン）を実行
+    - name: ZAP Full Scan
+      uses: zaproxy/action-full-scan@v0.10.0
+      with:
+        target: 'http://localhost:3000'
+        rules_file_name: '.zap/rules.tsv'
+        cmd_options: '-a -j'
+    
+    # 7. スキャン結果をアーティファクトとして保存
+    - name: Upload ZAP scan results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: zap-scan-results
+        path: |
+          report_html.html
+          report_json.json
+          report_md.md
+        retention-days: 30
 
-      - name: Juice ShopのDockerコンテナを起動
-        run: |
-          docker run -d -p 3000:3000 --name juice-shop bkimminich/juice-shop
-          sleep 20 # コンテナの起動を待機
-
-      - name: OWASP ZAP フルスキャンを実行
-        uses: zaproxy/action-full-scan@v0.3.0
-        with:
-          target: 'http://localhost:8080'
-          fail_action: false
-          cmd_options: '-I'
-
-      - name: スキャン結果を解析
-        run: |
-          HIGH_COUNT=$(grep -c "High" zap_scan.log || echo 0)
-          MEDIUM_COUNT=$(grep -c "Medium" zap_scan.log || echo 0)
-          LOW_COUNT=$(grep -c "Low" zap_scan.log || echo 0)
-          INFO_COUNT=$(grep -c "Info" zap_scan.log || echo 0)
-
-      - name: レポートを作成
-        run: |
-          echo "## OWASP ZAP セキュリティレポート" >> $GITHUB_STEP_SUMMARY
-          echo "| 脆弱性レベル | 検出数 |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔴 High      | $HIGH_COUNT |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟡 Medium    | $MEDIUM_COUNT |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟢 Low       | $LOW_COUNT |" >> $GITHUB_STEP_SUMMARY
-          echo "| ℹ️ Info      | $INFO_COUNT |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Total**    | $((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT + INFO_COUNT)) |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🔍 自動診断完了！詳細なレポートはログを確認してください。" >> $GITHUB_STEP_SUMMARY
+    # 8. 重要な脆弱性が見つかった場合にSlack通知（オプション）
+    - name: Notify Slack on High Risk Issues
+      if: failure()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: 'ZAP scan found high-risk vulnerabilities in Juice Shop!'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
