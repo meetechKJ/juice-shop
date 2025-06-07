@@ -2,8 +2,9 @@ name: OWASP ZAP Full Scan
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
   schedule:
     - cron: '0 0 * * 0' # 毎週日曜日に実行
 
