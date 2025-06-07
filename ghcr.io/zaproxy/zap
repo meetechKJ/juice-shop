@@ -1,0 +1,3 @@
+- name: OWASP ZAPのDockerイメージを取得
+  run: |
+    docker pull ghcr.io/zaproxy/zap
