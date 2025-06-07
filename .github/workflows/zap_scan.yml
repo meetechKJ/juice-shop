@@ -1,48 +1,45 @@
-name: ZAP Full Security Scan
+name: ZAP Security Scan (Docker Version)
 
-# このワークフローがいつ実行されるかを定義
+# Dockerを使用したより安定版のZAPスキャン
 on:
-  # プルリクエストが作成・更新された時
   pull_request:
     branches: [ main, master ]
-  # mainブランチにプッシュされた時
   push:
     branches: [ main, master ]
-  # 手動実行も可能にする
   workflow_dispatch:
 
 jobs:
-  zap-scan:
+  zap-scan-docker:
     runs-on: ubuntu-latest
-    name: ZAP Full Scan
+    name: ZAP Full Scan with Docker
     
     steps:
     # 1. ソースコードをチェックアウト
     - name: Checkout code
       uses: actions/checkout@v4
-      
-    # 2. Node.jsのセットアップ（juice-shopはNode.jsアプリケーション）
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
     
-    # 3. 依存関係をインストール
-    - name: Install dependencies
-      run: npm ci
-    
-    # 4. アプリケーションをバックグラウンドで起動
-    - name: Start Juice Shop
+    # 2. Dockerを使ってjuice-shopを起動
+    - name: Build and Start Juice Shop with Docker
       run: |
-        npm start &
+        # Dockerイメージをビルド
+        docker build -t juice-shop .
+        # コンテナをバックグラウンドで起動
+        docker run -d -p 3000:3000 --name juice-shop juice-shop
         echo "Waiting for application to start..."
         sleep 30
+        
         # アプリケーションが起動しているか確認
-        curl -f http://localhost:3000 || exit 1
-        echo "Application is running"
+        for i in {1..10}; do
+          if curl -f http://localhost:3000; then
+            echo "Application is running"
+            break
+          else
+            echo "Attempt $i: Application not ready yet, waiting..."
+            sleep 10
+          fi
+        done
     
-    # 5. ZAP Baseline Scan（軽量スキャン）を実行
+    # 3. ZAP Baseline Scan（軽量スキャン）
     - name: ZAP Baseline Scan
       uses: zaproxy/action-baseline@v0.12.0
       with:
@@ -50,7 +47,7 @@ jobs:
         rules_file_name: '.zap/rules.tsv'
         cmd_options: '-a'
     
-    # 6. ZAP Full Scan（完全スキャン）を実行
+    # 4. ZAP Full Scan（完全スキャン）
     - name: ZAP Full Scan
       uses: zaproxy/action-full-scan@v0.10.0
       with:
@@ -58,24 +55,21 @@ jobs:
         rules_file_name: '.zap/rules.tsv'
         cmd_options: '-a -j'
     
-    # 7. スキャン結果をアーティファクトとして保存
+    # 5. スキャン結果をアーティファクトとして保存
     - name: Upload ZAP scan results
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: zap-scan-results
+        name: zap-scan-results-docker
         path: |
           report_html.html
           report_json.json
           report_md.md
         retention-days: 30
-
-    # 8. 重要な脆弱性が見つかった場合にSlack通知（オプション）
-    - name: Notify Slack on High Risk Issues
-      if: failure()
-      uses: 8398a7/action-slack@v3
-      with:
-        status: failure
-        text: 'ZAP scan found high-risk vulnerabilities in Juice Shop!'
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    
+    # 6. クリーンアップ
+    - name: Cleanup Docker containers
+      if: always()
+      run: |
+        docker stop juice-shop || true
+        docker rm juice-shop || true
