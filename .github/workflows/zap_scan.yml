@@ -2,9 +2,9 @@ name: OWASP ZAP Full Scan
 
 on:
   push:
-    branches: [ main, develop,master ]
+    branches: [ main, develop, master ]
   pull_request:
-    branches: [ main,master ]
+    branches: [ main, master ]
   schedule:
     - cron: '0 0 * * 0' # 毎週日曜日に実行
 
@@ -18,7 +18,7 @@ jobs:
       - name: Juice ShopのDockerコンテナを起動
         run: |
           docker run -d -p 3000:3000 --name juice-shop bkimminich/juice-shop
-          sleep 10 # コンテナの起動を待機
+          sleep 20 # コンテナの起動を待機
 
       - name: OWASP ZAP フルスキャンを実行
         uses: zaproxy/action-full-scan@v0.3.0
@@ -26,6 +26,13 @@ jobs:
           target: 'http://localhost:3000'
           fail_action: false
           cmd_options: '-I'
+
+      - name: スキャン結果を解析
+        run: |
+          HIGH_COUNT=$(grep -c "High" zap_scan.log || echo 0)
+          MEDIUM_COUNT=$(grep -c "Medium" zap_scan.log || echo 0)
+          LOW_COUNT=$(grep -c "Low" zap_scan.log || echo 0)
+          INFO_COUNT=$(grep -c "Info" zap_scan.log || echo 0)
 
       - name: レポートを作成
         run: |
